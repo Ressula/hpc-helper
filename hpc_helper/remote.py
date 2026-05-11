@@ -69,13 +69,22 @@ def tar_pull(
     local_dest: str,
     exclude: Optional[List[str]] = None,
 ) -> int:
-    """Pull remote directory contents to local via tar-over-SSH.
+    """Pull a remote directory to local via tar-over-SSH.
 
-    Exclusion patterns (e.g. 'slurm-*.out') are applied on the remote side
-    before the archive is created, so they never consume bandwidth.
+    Packs the directory *itself* (not just its contents), so the result under
+    local_dest mirrors the remote layout:
+        remote: .../results/         →  local: local_dest/results/
+        remote: .../checkpoints/     →  local: local_dest/checkpoints/
+
+    Exclusion patterns are applied on the remote side before archiving.
     """
+    from pathlib import PurePosixPath
+
+    remote_path = PurePosixPath(remote_src.rstrip("/"))
+    remote_parent = shlex.quote(str(remote_path.parent))
+    remote_name = shlex.quote(remote_path.name)
     excl = " ".join(f"--exclude={shlex.quote(p)}" for p in (exclude or []))
-    remote_cmd = f"tar czf - {excl} -C {shlex.quote(remote_src)} ."
+    remote_cmd = f"tar czf - {excl} -C {remote_parent} {remote_name}"
 
     local_abs = str(Path(local_dest).resolve())
     Path(local_dest).mkdir(parents=True, exist_ok=True)
