@@ -340,6 +340,11 @@ def push(local: str, remote_subpath: Optional[str], full: bool) -> None:
             session.remote_project = remote_project
             session.save()
             return
+        if len(changed) > 1000:
+            console.print(
+                f"[yellow]Warning: {len(changed)} files changed. If this includes a large dataset, "
+                f"consider adding it to .hpcignore to avoid slow transfers.[/yellow]"
+            )
         console.print(
             f"Pushing [bold]{len(changed)}[/bold] changed file(s) "
             f"([dim]{len(current_sigs) - len(changed)} unchanged[/dim]) → "
