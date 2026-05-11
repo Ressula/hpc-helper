@@ -104,17 +104,14 @@ def tar_push(
 
     if files is None:
         patterns = _load_hpcignore(local_abs)
-        tar_cmd = ["tar", "--format=pax"]
+        tar_cmd = ["tar", "-czf", "-", "--format=pax"]
         for p in patterns:
             tar_cmd += ["--exclude", p]
-        tar_cmd += ["czf", "-", "-C", local_abs, "."]
+        tar_cmd += ["-C", local_abs, "."]
         writer, reader = _popen_pipe(tar_cmd, ["ssh", host, remote_cmd])
         return _wait_pipe(writer, reader)
 
-    # Incremental: pass files directly as arguments.
-    # Avoids --files-from (unreliable on Windows bsdtar) and the stdin deadlock
-    # (tar would need stdin for the file list AND stdout for the archive).
-    tar_cmd = ["tar", "--format=pax", "czf", "-", "-C", local_abs] + files
+    tar_cmd = ["tar", "-czf", "-", "--format=pax", "-C", local_abs] + files
     writer, reader = _popen_pipe(tar_cmd, ["ssh", host, remote_cmd])
     return _wait_pipe(writer, reader)
 
@@ -136,7 +133,7 @@ def tar_pull(
     remote_name = shlex.quote(remote_path.name)
     excl = " ".join(f"--exclude={shlex.quote(p)}" for p in (exclude or []))
     remote_cmd = (
-        f"LC_ALL=C.UTF-8 tar --format=pax czf - {excl} -C {remote_parent} {remote_name}"
+        f"LC_ALL=C.UTF-8 tar -czf - --format=pax {excl} -C {remote_parent} {remote_name}"
     )
 
     local_abs = str(Path(local_dest).resolve())
@@ -144,6 +141,6 @@ def tar_pull(
 
     writer, reader = _popen_pipe(
         ["ssh", host, remote_cmd],
-        ["tar", "xzf", "-", "-C", local_abs],
+        ["tar", "-xzf", "-", "-C", local_abs],
     )
     return _wait_pipe(writer, reader)
