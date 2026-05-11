@@ -398,7 +398,7 @@ def pull(remote_subpath: Optional[str], local_dest: Optional[str]) -> None:
         sys.exit(1)
 
     console.print(f"Pulling [bold]{cfg.host}:{remote_src}[/bold] → [bold]{effective_dest}[/bold]")
-    rc = tar_pull(cfg.host, remote_src, effective_dest, exclude=["slurm-*.out"])
+    rc = tar_pull(cfg.host, remote_src, effective_dest, exclude=["slurm-*.out", ".git"])
     if rc != 0:
         console.print("[red]Pull failed.[/red]")
         sys.exit(1)
