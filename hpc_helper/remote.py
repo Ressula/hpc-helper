@@ -4,6 +4,7 @@ import fnmatch
 import os
 import shlex
 import subprocess
+import tempfile
 from pathlib import Path, PurePosixPath
 from typing import List, Optional, Tuple
 
@@ -111,9 +112,21 @@ def tar_push(
         writer, reader = _popen_pipe(tar_cmd, ["ssh", host, remote_cmd])
         return _wait_pipe(writer, reader)
 
-    tar_cmd = ["tar", "-czf", "-", "--format=pax", "-C", local_abs] + files
-    writer, reader = _popen_pipe(tar_cmd, ["ssh", host, remote_cmd])
-    return _wait_pipe(writer, reader)
+    # Write file list to a temp file to avoid Windows command-line length limits
+    # (100k paths easily exceeds the ~32k char limit if passed as arguments).
+    # --files-from works now that we use -czf (with dash) instead of bare czf.
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", delete=False, encoding="utf-8"
+    )
+    try:
+        tmp.write("\n".join(files))
+        tmp.close()
+        tar_cmd = ["tar", "-czf", "-", "--format=pax", "-C", local_abs,
+                   f"--files-from={tmp.name}"]
+        writer, reader = _popen_pipe(tar_cmd, ["ssh", host, remote_cmd])
+        return _wait_pipe(writer, reader)
+    finally:
+        os.unlink(tmp.name)
 
 
 def tar_pull(
