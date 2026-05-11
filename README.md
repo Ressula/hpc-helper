@@ -1,6 +1,7 @@
 # hpc-helper
 
 A lightweight CLI that wraps the repetitive SSH and Slurm commands needed to run ML experiments on a restricted HPC cluster (login-node-only access, Slurm job scheduling).
+The original workflow is on  https://xinchengo.github.io/ustc107/guides/ai/deep-learning-homework/.
 
 ---
 

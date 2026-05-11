@@ -77,11 +77,28 @@ def _load_config() -> Config:
         sys.exit(1)
 
 
-def _require_job(session: Session) -> str:
-    if not session.job_id:
+def _require_job(session: Session, cfg: Config) -> str:
+    if session.job_id:
+        return session.job_id
+
+    # No cached job — check squeue for a running job to recover from an
+    # interrupted `hpc up` that submitted successfully but never saved the ID.
+    _, out = ssh_capture(cfg.host, f"squeue -h -u {cfg.user} -t R -o '%i %N'")
+    lines = [l.split() for l in out.strip().splitlines() if l.strip()]
+    if not lines:
         console.print("[red]No active job. Run `hpc up` first.[/red]")
         sys.exit(1)
-    return session.job_id
+
+    job_id, node = lines[0][0], lines[0][1] if len(lines[0]) > 1 else "unknown"
+    if len(lines) > 1:
+        console.print(f"[yellow]Multiple running jobs found; using job {job_id} ({node}).[/yellow]")
+    else:
+        console.print(f"[yellow]Recovered job {job_id} running on {node}. Use `hpc down` to cancel when done.[/yellow]")
+
+    session.job_id = job_id
+    session.node = node
+    session.save()
+    return job_id
 
 
 def _require_project(session: Session) -> str:
@@ -224,7 +241,7 @@ def down() -> None:
     """Cancel the active job and release the GPU."""
     cfg = _load_config()
     session = Session.load()
-    job_id = _require_job(session)
+    job_id = _require_job(session, cfg)
 
     with console.status(f"Cancelling job {job_id}..."):
         rc, out = ssh_capture(cfg.host, f"scancel {job_id}")
@@ -441,7 +458,7 @@ def run(
     """
     cfg = _load_config()
     session = Session.load()
-    job_id = _require_job(session)
+    job_id = _require_job(session, cfg)
 
     if raw:
         # Wrap the raw command in bash -c so compound expressions work
@@ -477,7 +494,7 @@ def shell() -> None:
     """
     cfg = _load_config()
     session = Session.load()
-    job_id = _require_job(session)
+    job_id = _require_job(session, cfg)
     console.print(f"Attaching to job [bold]{job_id}[/bold] on [bold]{session.node}[/bold]...\n")
     ssh_run(cfg.host, f"srun --jobid={job_id} --overlap --pty bash")
 
