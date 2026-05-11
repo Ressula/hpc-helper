@@ -9,30 +9,40 @@ from typing import Callable, List, Optional, Tuple
 
 
 def _load_hpcignore(directory: str) -> List[str]:
-    """Return glob patterns from .hpcignore in the given directory."""
+    """Return glob patterns from .hpcignore in the given directory.
+
+    Trailing slashes are stripped so `data/` and `data` both work,
+    consistent with .gitignore convention.
+    """
     p = Path(directory) / ".hpcignore"
     if not p.exists():
         return []
     patterns = []
     for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
+        line = line.strip().rstrip("/")   # strip trailing slash before matching
         if line and not line.startswith("#"):
             patterns.append(line)
     return patterns
 
 
 def _tar_filter(patterns: List[str]) -> Callable[[tarfile.TarInfo], Optional[tarfile.TarInfo]]:
-    """Return a tarfile filter function that excludes paths matching any pattern."""
+    """Return a tarfile filter function that excludes paths matching any pattern.
+
+    When a directory entry is excluded, tarfile stops recursing into it, so
+    all its contents are automatically excluded too.
+    """
     def _filter(info: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
-        # info.name is like "./subdir/file.py" — strip the leading ./
-        rel = info.name.lstrip("./")
+        # tar names start with "./" — strip that prefix explicitly
+        name = info.name
+        rel = name[2:] if name.startswith("./") else name
         if not rel:
             return info
         parts = rel.split("/")
         for pattern in patterns:
-            # Match against the full relative path or any path component
-            if any(fnmatch.fnmatch(p, pattern) for p in parts):
+            # Match any single path component (catches dir names at any depth)
+            if any(fnmatch.fnmatch(part, pattern) for part in parts):
                 return None
+            # Also match against the full relative path for patterns like "src/*.py"
             if fnmatch.fnmatch(rel, pattern):
                 return None
         return info
