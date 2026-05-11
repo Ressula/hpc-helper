@@ -20,11 +20,15 @@ def ssh_capture(host: str, command: str) -> Tuple[int, str]:
 
 
 def ssh_upload_text(host: str, remote_path: str, content: str) -> int:
-    """Write string content to a remote file via ssh + cat."""
+    """Write string content to a remote file via ssh + cat.
+
+    Encodes as bytes to prevent Windows from converting \\n to \\r\\n,
+    which sbatch rejects with a DOS line-break error.
+    """
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
     result = subprocess.run(
         ["ssh", host, f"cat > {remote_path}"],
-        input=content,
-        text=True,
+        input=normalized.encode("utf-8"),
     )
     return result.returncode
 
