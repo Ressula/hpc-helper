@@ -1,10 +1,42 @@
 from __future__ import annotations
 
+import fnmatch
 import shlex
 import subprocess
 import tarfile
 from pathlib import Path, PurePosixPath
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
+
+
+def _load_hpcignore(directory: str) -> List[str]:
+    """Return glob patterns from .hpcignore in the given directory."""
+    p = Path(directory) / ".hpcignore"
+    if not p.exists():
+        return []
+    patterns = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            patterns.append(line)
+    return patterns
+
+
+def _tar_filter(patterns: List[str]) -> Callable[[tarfile.TarInfo], Optional[tarfile.TarInfo]]:
+    """Return a tarfile filter function that excludes paths matching any pattern."""
+    def _filter(info: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
+        # info.name is like "./subdir/file.py" — strip the leading ./
+        rel = info.name.lstrip("./")
+        if not rel:
+            return info
+        parts = rel.split("/")
+        for pattern in patterns:
+            # Match against the full relative path or any path component
+            if any(fnmatch.fnmatch(p, pattern) for p in parts):
+                return None
+            if fnmatch.fnmatch(rel, pattern):
+                return None
+        return info
+    return _filter
 
 
 def ssh_run(host: str, command: str) -> int:
@@ -44,6 +76,9 @@ def tar_push(local: str, host: str, remote_dest: str) -> int:
     relying on locale settings or Windows bsdtar quirks.
     """
     local_abs = str(Path(local).resolve())
+    patterns = _load_hpcignore(local_abs)
+    tar_filter = _tar_filter(patterns) if patterns else None
+
     remote_cmd = (
         f"mkdir -p {shlex.quote(remote_dest)} && "
         f"LC_ALL=C.UTF-8 tar xzf - -C {shlex.quote(remote_dest)}"
@@ -51,7 +86,7 @@ def tar_push(local: str, host: str, remote_dest: str) -> int:
     ssh = subprocess.Popen(["ssh", host, remote_cmd], stdin=subprocess.PIPE)
     try:
         with tarfile.open(fileobj=ssh.stdin, mode="w|gz", format=tarfile.PAX_FORMAT) as tf:
-            tf.add(local_abs, arcname=".")
+            tf.add(local_abs, arcname=".", filter=tar_filter)
     finally:
         ssh.stdin.close()
     ssh.wait()

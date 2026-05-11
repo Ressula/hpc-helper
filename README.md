@@ -113,10 +113,20 @@ JOBID    NAME          STATE   NODE    TIME
 
 > Run this before `hpc run` whenever you have local changes to upload.
 
-Uploads a local directory to the remote project folder via `scp -r`.
+Uploads a local directory to the remote project folder. The remote destination is `<remote_home>/projects/<local-dir-name>/` by default. Pass `--to <rel-path>` to override the sub-path under `<remote_home>`.
 
-The remote destination is `<remote_home>/projects/<local-dir-name>/` by default.  
-Pass `--to <rel-path>` to override the sub-path under `<remote_home>`.
+**Every push transfers the full directory — it does not diff against what is already on the cluster.** To avoid re-uploading large datasets on every push, list them in a `.hpcignore` file in your project root:
+
+```
+# .hpcignore
+data/
+datasets/
+*.zip
+__pycache__/
+.git/
+```
+
+Patterns follow the same glob syntax as `.gitignore` (directory names, wildcards). Files matching any pattern are excluded from the archive before it is sent.
 
 ```bash
 # Sync the current directory (most common case)
@@ -132,7 +142,7 @@ hpc push --to experiments/run_42
 hpc push ~/other-project
 ```
 
-Files are transferred with `scp -r`; existing remote files not present locally are left in place (not deleted). To do a clean sync, run `hpc shell` and remove the remote directory manually first.
+Existing remote files not present locally are left in place (not deleted). To do a clean sync, run `hpc shell` and remove the remote directory manually first.
 
 ---
 
