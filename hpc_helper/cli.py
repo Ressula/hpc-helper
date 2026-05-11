@@ -260,9 +260,13 @@ def push(local: str, remote_subpath: Optional[str]) -> None:
         console.print("[dim]Tip: --to sets the REMOTE destination, not a local path.[/dim]")
         sys.exit(1)
 
-    # --to specifies the full remote destination; default preserves the dir name
+    # --to specifies the full remote destination; default preserves the dir name.
+    # Strip a leading ~/ so `--to ~/foo` and `--to foo` behave identically.
     if remote_subpath:
-        remote_project = f"{cfg.remote_home}/{remote_subpath.lstrip('/')}"
+        stripped = remote_subpath.lstrip("/")
+        if stripped.startswith("~/"):
+            stripped = stripped[2:]
+        remote_project = f"{cfg.remote_home}/{stripped}"
     else:
         remote_project = f"{cfg.remote_home}/projects/{local_path.name}"
 
