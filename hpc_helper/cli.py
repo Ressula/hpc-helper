@@ -296,12 +296,14 @@ def push(local: str, remote_subpath: Optional[str]) -> None:
 
 @cli.command()
 @click.argument("remote_subpath", default=None, required=False)
-@click.option("--to", "local_dest", default=".", show_default=True, help="Local destination directory.")
-def pull(remote_subpath: Optional[str], local_dest: str) -> None:
+@click.option("--to", "local_dest", default=None, help="Local destination directory.")
+def pull(remote_subpath: Optional[str], local_dest: Optional[str]) -> None:
     """Download files from the cluster. Slurm log files are always excluded.
 
-    Without arguments, pulls the entire remote project directory.
-    Pass a relative sub-path to pull a specific subdirectory or file.
+    Without arguments, syncs the remote project into the parent of the current
+    directory (git-pull style), so the project folder itself is updated in place.
+
+    Pass a sub-path to download a specific subdirectory into the current directory.
     """
     cfg = _load_config()
     session = Session.load()
@@ -311,15 +313,18 @@ def pull(remote_subpath: Optional[str], local_dest: str) -> None:
             remote_src = remote_subpath
         else:
             base = session.remote_project or f"{cfg.remote_home}/projects"
-            remote_src = f"{base}/{remote_subpath}"
+            remote_src = f"{base}/{remote_subpath.rstrip('/')}"
+        effective_dest = local_dest or "."
     elif session.remote_project:
         remote_src = session.remote_project
+        # Default: unpack into parent so project1/ is updated in-place (like git pull)
+        effective_dest = local_dest or ".."
     else:
         console.print("[red]No remote project path known. Run `hpc push` first or pass a path.[/red]")
         sys.exit(1)
 
-    console.print(f"Pulling [bold]{cfg.host}:{remote_src}[/bold] → [bold]{local_dest}[/bold]")
-    rc = tar_pull(cfg.host, remote_src, local_dest, exclude=["slurm-*.out"])
+    console.print(f"Pulling [bold]{cfg.host}:{remote_src}[/bold] → [bold]{effective_dest}[/bold]")
+    rc = tar_pull(cfg.host, remote_src, effective_dest, exclude=["slurm-*.out"])
     if rc != 0:
         console.print("[red]Pull failed.[/red]")
         sys.exit(1)
