@@ -87,9 +87,17 @@ def tar_push(local: str, host: str, remote_dest: str) -> int:
     try:
         with tarfile.open(fileobj=ssh.stdin, mode="w|gz", format=tarfile.PAX_FORMAT) as tf:
             tf.add(local_abs, arcname=".", filter=tar_filter)
+    except BaseException:
+        # Ctrl-C or any error: kill the SSH process so the remote tar also
+        # receives EOF/SIGHUP and exits, leaving no orphan on the cluster.
+        ssh.terminate()
+        raise
     finally:
-        ssh.stdin.close()
-    ssh.wait()
+        try:
+            ssh.stdin.close()
+        except OSError:
+            pass
+        ssh.wait()
     return ssh.returncode
 
 
