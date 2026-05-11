@@ -1,52 +1,36 @@
 from __future__ import annotations
 
 import fnmatch
+import os
 import shlex
 import subprocess
-import tarfile
+import tempfile
 from pathlib import Path, PurePosixPath
-from typing import Callable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 
 def _load_hpcignore(directory: str) -> List[str]:
-    """Return glob patterns from .hpcignore in the given directory.
-
-    Trailing slashes are stripped so `data/` and `data` both work,
-    consistent with .gitignore convention.
-    """
+    """Return glob patterns from .hpcignore, trailing slashes stripped."""
     p = Path(directory) / ".hpcignore"
     if not p.exists():
         return []
     patterns = []
     for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip().rstrip("/")   # strip trailing slash before matching
+        line = line.strip().rstrip("/")
         if line and not line.startswith("#"):
             patterns.append(line)
     return patterns
 
 
-def _tar_filter(patterns: List[str]) -> Callable[[tarfile.TarInfo], Optional[tarfile.TarInfo]]:
-    """Return a tarfile filter function that excludes paths matching any pattern.
-
-    When a directory entry is excluded, tarfile stops recursing into it, so
-    all its contents are automatically excluded too.
-    """
-    def _filter(info: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
-        # tar names start with "./" — strip that prefix explicitly
-        name = info.name
-        rel = name[2:] if name.startswith("./") else name
-        if not rel:
-            return info
-        parts = rel.split("/")
-        for pattern in patterns:
-            # Match any single path component (catches dir names at any depth)
-            if any(fnmatch.fnmatch(part, pattern) for part in parts):
-                return None
-            # Also match against the full relative path for patterns like "src/*.py"
-            if fnmatch.fnmatch(rel, pattern):
-                return None
-        return info
-    return _filter
+def is_ignored(rel: str, patterns: List[str]) -> bool:
+    """Return True if the relative path matches any .hpcignore pattern."""
+    parts = rel.replace("\\", "/").split("/")
+    for pattern in patterns:
+        if any(fnmatch.fnmatch(part, pattern) for part in parts):
+            return True
+        if fnmatch.fnmatch(rel, pattern):
+            return True
+    return False
 
 
 def ssh_run(host: str, command: str) -> int:
@@ -78,37 +62,73 @@ def ssh_upload_text(host: str, remote_path: str, content: str) -> int:
     return result.returncode
 
 
-def tar_push(local: str, host: str, remote_dest: str) -> int:
-    """Push local directory contents to remote via Python tarfile + SSH.
+def _popen_pipe(write_cmd: List[str], read_cmd: List[str]):
+    """Start write_cmd | read_cmd, return (writer, reader) Popen objects."""
+    writer = subprocess.Popen(write_cmd, stdout=subprocess.PIPE)
+    reader = subprocess.Popen(read_cmd, stdin=writer.stdout)
+    writer.stdout.close()
+    return writer, reader
 
-    Uses Python's built-in tarfile module (PAX format) instead of the system
-    tar binary, so Unicode/Chinese filenames work on every platform without
-    relying on locale settings or Windows bsdtar quirks.
+
+def _wait_pipe(writer: subprocess.Popen, reader: subprocess.Popen) -> int:
+    """Wait for both sides of a pipe, terminating both on interrupt."""
+    try:
+        reader.wait()
+        writer.wait()
+    except BaseException:
+        writer.terminate()
+        reader.terminate()
+        writer.wait()
+        reader.wait()
+        raise
+    return reader.returncode
+
+
+def tar_push(
+    local: str,
+    host: str,
+    remote_dest: str,
+    files: Optional[List[str]] = None,
+) -> int:
+    """Push to remote_dest via system tar + SSH.
+
+    files=None  → full push (everything minus .hpcignore).
+    files=[...]  → incremental push: only the listed relative paths.
+
+    PAX format ensures Unicode/Chinese filenames transfer correctly.
     """
     local_abs = str(Path(local).resolve())
-    patterns = _load_hpcignore(local_abs)
-    tar_filter = _tar_filter(patterns) if patterns else None
-
     remote_cmd = (
         f"mkdir -p {shlex.quote(remote_dest)} && "
         f"LC_ALL=C.UTF-8 tar xzf - -C {shlex.quote(remote_dest)}"
     )
-    ssh = subprocess.Popen(["ssh", host, remote_cmd], stdin=subprocess.PIPE)
+
+    if files is None:
+        patterns = _load_hpcignore(local_abs)
+        tar_cmd = ["tar", "--format=pax"]
+        for p in patterns:
+            tar_cmd += ["--exclude", p]
+        tar_cmd += ["czf", "-", "-C", local_abs, "."]
+        writer, reader = _popen_pipe(tar_cmd, ["ssh", host, remote_cmd])
+        return _wait_pipe(writer, reader)
+
+    # Incremental: write the file list to a temp file to avoid pipe deadlock
+    # (tar reads from stdin for --files-from *and* writes to stdout for the archive)
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".txt", delete=False, encoding="utf-8"
+    )
     try:
-        with tarfile.open(fileobj=ssh.stdin, mode="w|gz", format=tarfile.PAX_FORMAT) as tf:
-            tf.add(local_abs, arcname=".", filter=tar_filter)
-    except BaseException:
-        # Ctrl-C or any error: kill the SSH process so the remote tar also
-        # receives EOF/SIGHUP and exits, leaving no orphan on the cluster.
-        ssh.terminate()
-        raise
+        tmp.write("\n".join(files))
+        tmp.close()
+        tar_cmd = [
+            "tar", "--format=pax",
+            f"--files-from={tmp.name}",
+            "czf", "-", "-C", local_abs,
+        ]
+        writer, reader = _popen_pipe(tar_cmd, ["ssh", host, remote_cmd])
+        return _wait_pipe(writer, reader)
     finally:
-        try:
-            ssh.stdin.close()
-        except OSError:
-            pass
-        ssh.wait()
-    return ssh.returncode
+        os.unlink(tmp.name)
 
 
 def tar_pull(
@@ -117,14 +137,11 @@ def tar_pull(
     local_dest: str,
     exclude: Optional[List[str]] = None,
 ) -> int:
-    """Pull a remote directory to local via tar-over-SSH + Python tarfile.
+    """Pull a remote directory to local via system tar + SSH.
 
-    Packs the directory *itself* on the remote side so the result under
-    local_dest mirrors the remote layout:
+    Packs the directory *itself* on the remote so the result under local_dest
+    mirrors the remote layout:
         remote: .../results/     →  local: local_dest/results/
-
-    Exclusion patterns are applied on the remote before archiving.
-    Python tarfile handles extraction so Unicode filenames work on Windows too.
     """
     remote_path = PurePosixPath(remote_src.rstrip("/"))
     remote_parent = shlex.quote(str(remote_path.parent))
@@ -137,8 +154,8 @@ def tar_pull(
     local_abs = str(Path(local_dest).resolve())
     Path(local_dest).mkdir(parents=True, exist_ok=True)
 
-    ssh = subprocess.Popen(["ssh", host, remote_cmd], stdout=subprocess.PIPE)
-    with tarfile.open(fileobj=ssh.stdout, mode="r|gz") as tf:
-        tf.extractall(path=local_abs)
-    ssh.wait()
-    return ssh.returncode
+    writer, reader = _popen_pipe(
+        ["ssh", host, remote_cmd],
+        ["tar", "xzf", "-", "-C", local_abs],
+    )
+    return _wait_pipe(writer, reader)

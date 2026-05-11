@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import re
 import shlex
 import sys
 import time
 from dataclasses import fields as dc_fields
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional, Tuple
 
 import click
 from rich.console import Console
@@ -14,10 +17,41 @@ from rich.table import Table
 
 from .batch import parse_batch_file, render_sbatch_script
 from .config import Config
-from .remote import tar_pull, tar_push, ssh_capture, ssh_run, ssh_upload_text
+from .remote import _load_hpcignore, is_ignored, tar_pull, tar_push, ssh_capture, ssh_run, ssh_upload_text
 from .session import Session
 
 console = Console()
+
+_MANIFEST_DIR = Path.home() / ".hpc-helper" / "manifests"
+
+
+def _manifest_path(local_abs: str, remote_dest: str) -> Path:
+    key = hashlib.md5(f"{local_abs}||{remote_dest}".encode()).hexdigest()[:16]
+    return _MANIFEST_DIR / f"{key}.json"
+
+
+def _file_sig(p: Path) -> List[int]:
+    st = p.stat()
+    return [st.st_mtime_ns, st.st_size]
+
+
+def _scan_files(local_abs: str, patterns: List[str]) -> Dict[str, List[int]]:
+    """Walk local_abs, skip ignored paths, return {rel_path: [mtime_ns, size]}."""
+    sigs: Dict[str, List[int]] = {}
+    for dirpath, dirnames, filenames in os.walk(local_abs):
+        rel_dir = os.path.relpath(dirpath, local_abs).replace("\\", "/")
+        if rel_dir == ".":
+            rel_dir = ""
+        # Prune ignored dirs so os.walk never descends into them
+        dirnames[:] = [
+            d for d in sorted(dirnames)
+            if not is_ignored(f"{rel_dir}/{d}".lstrip("/"), patterns)
+        ]
+        for fname in sorted(filenames):
+            rel = f"{rel_dir}/{fname}".lstrip("/").replace("\\", "/")
+            if not is_ignored(rel, patterns):
+                sigs[rel] = _file_sig(Path(local_abs) / rel)
+    return sigs
 
 _ENTRY_SH = """\
 #!/bin/bash
@@ -248,17 +282,23 @@ def ps() -> None:
     metavar="REMOTE_PATH",
     help="Full remote destination path under remote_home (e.g. experiments/run_42).",
 )
-def push(local: str, remote_subpath: Optional[str]) -> None:
+@click.option(
+    "--full",
+    is_flag=True,
+    help="Force a full sync, ignoring the local change manifest.",
+)
+def push(local: str, remote_subpath: Optional[str], full: bool) -> None:
     """Sync a local directory to the cluster.
 
-    By default, the current directory is pushed to <remote_home>/projects/<dir-name>/.
-    Use --to REMOTE_PATH to choose a different destination (relative to remote_home).
+    Only files that changed since the last push are transferred (incremental).
+    Use --full to force a complete re-sync.
 
     \b
     Examples:
       hpc push                            # ~/homework/project1 → remote:projects/project1/
       hpc push ./src                      # sync only the src/ subdirectory
       hpc push --to experiments/run_42   # ~/homework/project1 → remote:experiments/run_42/
+      hpc push --full                     # re-send everything regardless of changes
     """
     cfg = _load_config()
     session = Session.load()
@@ -269,8 +309,6 @@ def push(local: str, remote_subpath: Optional[str]) -> None:
         console.print("[dim]Tip: --to sets the REMOTE destination, not a local path.[/dim]")
         sys.exit(1)
 
-    # --to specifies the full remote destination; default preserves the dir name.
-    # Strip a leading ~/ so `--to ~/foo` and `--to foo` behave identically.
     if remote_subpath:
         stripped = remote_subpath.lstrip("/")
         if stripped.startswith("~/"):
@@ -281,15 +319,51 @@ def push(local: str, remote_subpath: Optional[str]) -> None:
 
     ssh_capture(cfg.host, f"mkdir -p {remote_project}")
 
-    console.print(f"Pushing [bold]{local_path}/[/bold] → [bold]{cfg.host}:{remote_project}/[/bold]")
-    rc = tar_push(str(local_path), cfg.host, remote_project)
+    # ── manifest-based incremental push ──────────────────────────────────────
+    local_abs = str(local_path)
+    patterns = _load_hpcignore(local_abs)
+    manifest_file = _manifest_path(local_abs, remote_project)
+
+    manifest: Dict[str, List[int]] = {}
+    if not full and manifest_file.exists():
+        try:
+            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+        except Exception:
+            manifest = {}
+
+    current_sigs = _scan_files(local_abs, patterns)
+
+    if manifest:
+        changed = [p for p, sig in current_sigs.items() if manifest.get(p) != sig]
+        if not changed:
+            console.print("[green]Nothing changed — skipping push.[/green]")
+            session.remote_project = remote_project
+            session.save()
+            return
+        console.print(
+            f"Pushing [bold]{len(changed)}[/bold] changed file(s) "
+            f"([dim]{len(current_sigs) - len(changed)} unchanged[/dim]) → "
+            f"[bold]{cfg.host}:{remote_project}/[/bold]"
+        )
+        rc = tar_push(local_abs, cfg.host, remote_project, files=changed)
+    else:
+        console.print(
+            f"Pushing [bold]{len(current_sigs)}[/bold] file(s) → "
+            f"[bold]{cfg.host}:{remote_project}/[/bold]"
+        )
+        rc = tar_push(local_abs, cfg.host, remote_project, files=None)
+
     if rc != 0:
         console.print("[red]Push failed.[/red]")
         sys.exit(1)
 
+    # Save updated manifest only after a successful transfer
+    manifest_file.parent.mkdir(parents=True, exist_ok=True)
+    manifest_file.write_text(json.dumps(current_sigs), encoding="utf-8")
+
     session.remote_project = remote_project
     session.save()
-    console.print(f"[green]Done. Remote project set to: {remote_project}[/green]")
+    console.print(f"[green]Done.[/green]")
 
 
 # ── hpc pull ──────────────────────────────────────────────────────────────────
