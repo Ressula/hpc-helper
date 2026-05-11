@@ -4,7 +4,6 @@ import fnmatch
 import os
 import shlex
 import subprocess
-import tempfile
 from pathlib import Path, PurePosixPath
 from typing import List, Optional, Tuple
 
@@ -112,24 +111,12 @@ def tar_push(
         writer, reader = _popen_pipe(tar_cmd, ["ssh", host, remote_cmd])
         return _wait_pipe(writer, reader)
 
-    # Incremental: write the file list to a temp file to avoid pipe deadlock
-    # (tar reads from stdin for --files-from *and* writes to stdout for the archive)
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".txt", delete=False, encoding="utf-8"
-    )
-    try:
-        tmp.write("\n".join(files))
-        tmp.close()
-        tar_cmd = [
-            "tar", "--format=pax",
-            "czf", "-",
-            "-C", local_abs,
-            f"--files-from={tmp.name}",
-        ]
-        writer, reader = _popen_pipe(tar_cmd, ["ssh", host, remote_cmd])
-        return _wait_pipe(writer, reader)
-    finally:
-        os.unlink(tmp.name)
+    # Incremental: pass files directly as arguments.
+    # Avoids --files-from (unreliable on Windows bsdtar) and the stdin deadlock
+    # (tar would need stdin for the file list AND stdout for the archive).
+    tar_cmd = ["tar", "--format=pax", "czf", "-", "-C", local_abs] + files
+    writer, reader = _popen_pipe(tar_cmd, ["ssh", host, remote_cmd])
+    return _wait_pipe(writer, reader)
 
 
 def tar_pull(
