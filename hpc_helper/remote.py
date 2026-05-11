@@ -99,7 +99,7 @@ def tar_push(
     local_abs = str(Path(local).resolve())
     remote_cmd = (
         f"mkdir -p {shlex.quote(remote_dest)} && "
-        f"LC_ALL=C.UTF-8 tar xzf - -C {shlex.quote(remote_dest)}"
+        f"LC_ALL=C.UTF-8 tar xzf - -C {shlex.quote(remote_dest)} 2>/dev/null"
     )
 
     if files is None:
