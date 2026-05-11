@@ -21,9 +21,9 @@ console = Console()
 
 _ENTRY_SH = """\
 #!/bin/bash
-#SBATCH -A stu
-#SBATCH --partition=Students
-#SBATCH --qos=qos_stu_default
+#SBATCH -A {account}
+#SBATCH --partition={partition}
+#SBATCH --qos={qos}
 #SBATCH --job-name={name}
 #SBATCH --nodes=1
 #SBATCH -c {cpus}
@@ -87,6 +87,9 @@ def init() -> None:
     user = ask("Cluster username", "user")
     remote_home = ask("Remote home directory", "remote_home", f"/home/scc/{user}")
     conda_env = ask("Default conda environment", "conda_env", "base")
+    account = ask("Slurm account", "account", "stu")
+    partition = ask("Slurm partition", "partition", "Students")
+    qos = ask("Slurm QOS", "qos", "qos_stu_default")
     cpus = int(ask("Default CPUs per job", "cpus", 4))
     gpus = int(ask("Default GPUs per job", "gpus", 1))
     walltime = int(ask("Default wall-time (minutes)", "walltime", 200))
@@ -96,6 +99,9 @@ def init() -> None:
         user=user,
         remote_home=remote_home,
         conda_env=conda_env,
+        account=account,
+        partition=partition,
+        qos=qos,
         cpus=cpus,
         gpus=gpus,
         walltime=walltime,
@@ -122,6 +128,9 @@ def up(cpus: Optional[int], gpus: Optional[int], walltime: Optional[int], name: 
         sys.exit(1)
 
     script = _ENTRY_SH.format(
+        account=cfg.account,
+        partition=cfg.partition,
+        qos=cfg.qos,
         name=name,
         cpus=cpus or cfg.cpus,
         gpus=gpus or cfg.gpus,

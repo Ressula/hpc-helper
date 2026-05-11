@@ -23,6 +23,9 @@ class Config:
     user: str
     remote_home: str
     conda_env: str
+    account: str = "stu"
+    partition: str = "Students"
+    qos: str = "qos_stu_default"
     cpus: int = 4
     gpus: int = 1
     walltime: int = 200

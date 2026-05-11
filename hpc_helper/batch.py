@@ -10,9 +10,9 @@ from .config import Config
 
 _SBATCH_HEADER = """\
 #!/bin/bash
-#SBATCH -A stu
-#SBATCH --partition=Students
-#SBATCH --qos=qos_stu_default
+#SBATCH -A {account}
+#SBATCH --partition={partition}
+#SBATCH --qos={qos}
 #SBATCH --job-name={name}
 #SBATCH --nodes=1
 #SBATCH -c {cpus}
@@ -80,6 +80,9 @@ def parse_batch_file(
 
 def render_sbatch_script(group: Group, cfg: Config) -> str:
     header = _SBATCH_HEADER.format(
+        account=cfg.account,
+        partition=cfg.partition,
+        qos=cfg.qos,
         name=group.name,
         cpus=group.cpus,
         gpus=group.gpus,
