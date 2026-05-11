@@ -33,9 +33,17 @@ def ssh_upload_text(host: str, remote_path: str, content: str) -> int:
     return result.returncode
 
 
-def scp_push(local: str, host: str, remote_dir: str) -> int:
-    """Push a local path into a remote directory via scp -r."""
-    return subprocess.run(["scp", "-r", local, f"{host}:{remote_dir}"]).returncode
+def rsync_push(local: str, host: str, remote_dest: str) -> int:
+    """Push local directory contents into remote_dest via rsync.
+
+    Trailing slash on source tells rsync to copy contents, not the directory
+    itself, so the result is always consistent regardless of whether remote_dest
+    already exists.
+    """
+    src = local.rstrip("/") + "/"
+    return subprocess.run(
+        ["rsync", "-avz", "--progress", src, f"{host}:{remote_dest}"]
+    ).returncode
 
 
 def rsync_pull(

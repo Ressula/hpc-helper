@@ -14,7 +14,7 @@ from rich.table import Table
 
 from .batch import parse_batch_file, render_sbatch_script
 from .config import Config
-from .remote import rsync_pull, scp_push, ssh_capture, ssh_run, ssh_upload_text
+from .remote import rsync_pull, rsync_push, ssh_capture, ssh_run, ssh_upload_text
 from .session import Session
 
 console = Console()
@@ -236,33 +236,48 @@ def ps() -> None:
     "--to",
     "remote_subpath",
     default=None,
-    help="Remote sub-path under remote_home (overrides default projects/ location).",
+    metavar="REMOTE_PATH",
+    help="Full remote destination path under remote_home (e.g. experiments/run_42).",
 )
 def push(local: str, remote_subpath: Optional[str]) -> None:
     """Sync a local directory to the cluster.
 
-    By default pushes to <remote_home>/projects/<dir-name>/.
-    Use --to to specify a different sub-path under remote_home.
+    By default, the current directory is pushed to <remote_home>/projects/<dir-name>/.
+    Use --to REMOTE_PATH to choose a different destination (relative to remote_home).
+
+    \b
+    Examples:
+      hpc push                            # ~/homework/project1 → remote:projects/project1/
+      hpc push ./src                      # sync only the src/ subdirectory
+      hpc push --to experiments/run_42   # ~/homework/project1 → remote:experiments/run_42/
     """
     cfg = _load_config()
     session = Session.load()
 
     local_path = Path(local).resolve()
     if not local_path.exists():
-        console.print(f"[red]Path does not exist: {local_path}[/red]")
+        console.print(f"[red]Local path does not exist: {local_path}[/red]")
+        console.print("[dim]Tip: --to sets the REMOTE destination, not a local path.[/dim]")
         sys.exit(1)
 
-    remote_parent = f"{cfg.remote_home}/{remote_subpath}" if remote_subpath else f"{cfg.remote_home}/projects"
+    # --to specifies the full remote destination; default preserves the dir name
+    if remote_subpath:
+        remote_project = f"{cfg.remote_home}/{remote_subpath.lstrip('/')}"
+    else:
+        remote_project = f"{cfg.remote_home}/projects/{local_path.name}"
 
-    console.print(f"Pushing [bold]{local_path}[/bold] → [bold]{cfg.host}:{remote_parent}/[/bold]")
-    rc = scp_push(str(local_path), cfg.host, remote_parent)
+    # Ensure the destination exists before rsyncing into it
+    ssh_capture(cfg.host, f"mkdir -p {remote_project}")
+
+    console.print(f"Pushing [bold]{local_path}/[/bold] → [bold]{cfg.host}:{remote_project}/[/bold]")
+    rc = rsync_push(str(local_path), cfg.host, remote_project)
     if rc != 0:
         console.print("[red]Push failed.[/red]")
         sys.exit(1)
 
-    session.remote_project = f"{remote_parent}/{local_path.name}"
+    session.remote_project = remote_project
     session.save()
-    console.print(f"[green]Done. Remote project set to: {session.remote_project}[/green]")
+    console.print(f"[green]Done. Remote project set to: {remote_project}[/green]")
 
 
 # ── hpc pull ──────────────────────────────────────────────────────────────────
