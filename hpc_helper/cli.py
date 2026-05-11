@@ -402,8 +402,11 @@ def pull(remote_subpath: Optional[str], local_dest: Optional[str]) -> None:
         console.print("[red]No remote project path known. Run `hpc push` first or pass a path.[/red]")
         sys.exit(1)
 
+    ignore_patterns = _load_hpcignore(str(Path.cwd()))
+    exclude = ["slurm-*.out", ".git"] + ignore_patterns
+
     console.print(f"Pulling [bold]{cfg.host}:{remote_src}[/bold] → [bold]{effective_dest}[/bold]")
-    rc = tar_pull(cfg.host, remote_src, effective_dest, exclude=["slurm-*.out", ".git"])
+    rc = tar_pull(cfg.host, remote_src, effective_dest, exclude=exclude)
     if rc != 0:
         console.print("[red]Pull failed.[/red]")
         sys.exit(1)
