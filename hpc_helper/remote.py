@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import shlex
 import subprocess
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 
@@ -33,28 +35,54 @@ def ssh_upload_text(host: str, remote_path: str, content: str) -> int:
     return result.returncode
 
 
-def rsync_push(local: str, host: str, remote_dest: str) -> int:
-    """Push local directory contents into remote_dest via rsync.
+def tar_push(local: str, host: str, remote_dest: str) -> int:
+    """Push local directory contents into remote_dest via tar-over-SSH.
 
-    Trailing slash on source tells rsync to copy contents, not the directory
-    itself, so the result is always consistent regardless of whether remote_dest
-    already exists.
+    Uses tar + SSH instead of rsync so it works on Windows (OpenSSH + the
+    built-in bsdtar shipped with Windows 10+), macOS, and Linux alike.
+
+    `tar -C localdir .` packs the *contents* of the directory, so the layout
+    on the remote is always:
+        remote_dest/file.py   (not remote_dest/localdir/file.py)
+    regardless of whether remote_dest already exists.
     """
-    src = local.rstrip("/") + "/"
-    return subprocess.run(
-        ["rsync", "-avz", "--progress", src, f"{host}:{remote_dest}"]
-    ).returncode
+    local_abs = str(Path(local).resolve())
+    remote_cmd = (
+        f"mkdir -p {shlex.quote(remote_dest)} && "
+        f"tar xzf - -C {shlex.quote(remote_dest)}"
+    )
+    tar = subprocess.Popen(
+        ["tar", "czf", "-", "-C", local_abs, "."],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    ssh = subprocess.Popen(["ssh", host, remote_cmd], stdin=tar.stdout)
+    tar.stdout.close()  # allow tar to receive SIGPIPE if ssh exits early
+    ssh.wait()
+    tar.wait()
+    return ssh.returncode
 
 
-def rsync_pull(
+def tar_pull(
     host: str,
     remote_src: str,
     local_dest: str,
     exclude: Optional[List[str]] = None,
 ) -> int:
-    """Pull a remote path to local via rsync, with optional exclusion patterns."""
-    cmd = ["rsync", "-avz", "--progress"]
-    for pattern in exclude or []:
-        cmd += ["--exclude", pattern]
-    cmd += [f"{host}:{remote_src}", local_dest]
-    return subprocess.run(cmd).returncode
+    """Pull remote directory contents to local via tar-over-SSH.
+
+    Exclusion patterns (e.g. 'slurm-*.out') are applied on the remote side
+    before the archive is created, so they never consume bandwidth.
+    """
+    excl = " ".join(f"--exclude={shlex.quote(p)}" for p in (exclude or []))
+    remote_cmd = f"tar czf - {excl} -C {shlex.quote(remote_src)} ."
+
+    local_abs = str(Path(local_dest).resolve())
+    Path(local_dest).mkdir(parents=True, exist_ok=True)
+
+    ssh = subprocess.Popen(["ssh", host, remote_cmd], stdout=subprocess.PIPE)
+    tar = subprocess.Popen(["tar", "xzf", "-", "-C", local_abs], stdin=ssh.stdout)
+    ssh.stdout.close()
+    tar.wait()
+    ssh.wait()
+    return tar.returncode

@@ -14,7 +14,7 @@ from rich.table import Table
 
 from .batch import parse_batch_file, render_sbatch_script
 from .config import Config
-from .remote import rsync_pull, rsync_push, ssh_capture, ssh_run, ssh_upload_text
+from .remote import tar_pull, tar_push, ssh_capture, ssh_run, ssh_upload_text
 from .session import Session
 
 console = Console()
@@ -266,11 +266,10 @@ def push(local: str, remote_subpath: Optional[str]) -> None:
     else:
         remote_project = f"{cfg.remote_home}/projects/{local_path.name}"
 
-    # Ensure the destination exists before rsyncing into it
     ssh_capture(cfg.host, f"mkdir -p {remote_project}")
 
     console.print(f"Pushing [bold]{local_path}/[/bold] → [bold]{cfg.host}:{remote_project}/[/bold]")
-    rc = rsync_push(str(local_path), cfg.host, remote_project)
+    rc = tar_push(str(local_path), cfg.host, remote_project)
     if rc != 0:
         console.print("[red]Push failed.[/red]")
         sys.exit(1)
@@ -307,7 +306,7 @@ def pull(remote_subpath: Optional[str], local_dest: str) -> None:
         sys.exit(1)
 
     console.print(f"Pulling [bold]{cfg.host}:{remote_src}[/bold] → [bold]{local_dest}[/bold]")
-    rc = rsync_pull(cfg.host, remote_src, local_dest, exclude=["slurm-*.out"])
+    rc = tar_pull(cfg.host, remote_src, local_dest, exclude=["slurm-*.out"])
     if rc != 0:
         console.print("[red]Pull failed.[/red]")
         sys.exit(1)
