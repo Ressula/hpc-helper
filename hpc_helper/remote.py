@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+# Passed to every local tar subprocess so Windows bsdtar also uses UTF-8
+# when reading filenames from the filesystem.
+_UTF8_ENV = {**os.environ, "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
 
 
 def ssh_run(host: str, command: str) -> int:
@@ -49,12 +54,13 @@ def tar_push(local: str, host: str, remote_dest: str) -> int:
     local_abs = str(Path(local).resolve())
     remote_cmd = (
         f"mkdir -p {shlex.quote(remote_dest)} && "
-        f"tar xzf - -C {shlex.quote(remote_dest)}"
+        f"LC_ALL=C.UTF-8 tar xzf - -C {shlex.quote(remote_dest)}"
     )
     tar = subprocess.Popen(
-        ["tar", "czf", "-", "-C", local_abs, "."],
+        ["tar", "--format=pax", "czf", "-", "-C", local_abs, "."],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
+        env=_UTF8_ENV,
     )
     ssh = subprocess.Popen(["ssh", host, remote_cmd], stdin=tar.stdout)
     tar.stdout.close()  # allow tar to receive SIGPIPE if ssh exits early
@@ -84,13 +90,17 @@ def tar_pull(
     remote_parent = shlex.quote(str(remote_path.parent))
     remote_name = shlex.quote(remote_path.name)
     excl = " ".join(f"--exclude={shlex.quote(p)}" for p in (exclude or []))
-    remote_cmd = f"tar czf - {excl} -C {remote_parent} {remote_name}"
+    remote_cmd = f"LC_ALL=C.UTF-8 tar --format=pax czf - {excl} -C {remote_parent} {remote_name}"
 
     local_abs = str(Path(local_dest).resolve())
     Path(local_dest).mkdir(parents=True, exist_ok=True)
 
     ssh = subprocess.Popen(["ssh", host, remote_cmd], stdout=subprocess.PIPE)
-    tar = subprocess.Popen(["tar", "xzf", "-", "-C", local_abs], stdin=ssh.stdout)
+    tar = subprocess.Popen(
+        ["tar", "xzf", "-", "-C", local_abs],
+        stdin=ssh.stdout,
+        env=_UTF8_ENV,
+    )
     ssh.stdout.close()
     tar.wait()
     ssh.wait()
