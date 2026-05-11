@@ -122,8 +122,9 @@ def tar_push(
         tmp.close()
         tar_cmd = [
             "tar", "--format=pax",
+            "czf", "-",
+            "-C", local_abs,
             f"--files-from={tmp.name}",
-            "czf", "-", "-C", local_abs,
         ]
         writer, reader = _popen_pipe(tar_cmd, ["ssh", host, remote_cmd])
         return _wait_pipe(writer, reader)
