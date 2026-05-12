@@ -419,20 +419,19 @@ def pull(remote_subpath: Optional[str], local_dest: Optional[str]) -> None:
     cfg = _load_config()
     session = Session.load()
 
+    # Derive the remote project from the current directory name (same as push),
+    # so pull always targets the right project regardless of session state.
+    default_remote = f"{cfg.remote_home}/projects/{Path.cwd().name}"
+
     if remote_subpath:
         if remote_subpath.startswith("/"):
             remote_src = remote_subpath
         else:
-            base = session.remote_project or f"{cfg.remote_home}/projects"
-            remote_src = f"{base}/{remote_subpath.rstrip('/')}"
+            remote_src = f"{default_remote}/{remote_subpath.rstrip('/')}"
         effective_dest = local_dest or "."
-    elif session.remote_project:
-        remote_src = session.remote_project
-        # Default: unpack into parent so project1/ is updated in-place (like git pull)
-        effective_dest = local_dest or ".."
     else:
-        console.print("[red]No remote project path known. Run `hpc push` first or pass a path.[/red]")
-        sys.exit(1)
+        remote_src = default_remote
+        effective_dest = local_dest or ".."
 
     ignore_patterns = _load_hpcignore(str(Path.cwd()))
     exclude = ["slurm-*.out", ".git"] + ignore_patterns

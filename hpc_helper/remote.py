@@ -33,15 +33,33 @@ def is_ignored(rel: str, patterns: List[str]) -> bool:
     return False
 
 
+# Applied to every SSH invocation:
+# - Bypass any ControlMaster the user may have configured; a stale control
+#   socket after Ctrl+C causes the alternating hang-succeed-hang pattern.
+# - Abort if the TCP handshake/auth hangs (ConnectTimeout).
+# - Detect a dropped connection during long transfers (keepalive).
+_SSH_OPTS = [
+    "-o", "ControlMaster=no",
+    "-o", "ControlPath=none",
+    "-o", "ConnectTimeout=15",
+    "-o", "ServerAliveInterval=15",
+    "-o", "ServerAliveCountMax=3",
+]
+
+
+def _ssh(host: str, extra_flags: Optional[List[str]] = None) -> List[str]:
+    return ["ssh"] + _SSH_OPTS + (extra_flags or []) + [host]
+
+
 def ssh_run(host: str, command: str) -> int:
     """Run a remote command, streaming output to the terminal."""
-    return subprocess.run(["ssh", "-t", host, command]).returncode
+    return subprocess.run(_ssh(host, ["-t"]) + [command]).returncode
 
 
 def ssh_capture(host: str, command: str) -> Tuple[int, str]:
     """Run a remote command and capture its stdout."""
     result = subprocess.run(
-        ["ssh", host, command],
+        _ssh(host) + [command],
         capture_output=True,
         text=True,
     )
@@ -56,7 +74,7 @@ def ssh_upload_text(host: str, remote_path: str, content: str) -> int:
     """
     normalized = content.replace("\r\n", "\n").replace("\r", "\n")
     result = subprocess.run(
-        ["ssh", host, f"cat > {remote_path}"],
+        _ssh(host) + [f"cat > {remote_path}"],
         input=normalized.encode("utf-8"),
     )
     return result.returncode
@@ -109,7 +127,7 @@ def tar_push(
         for p in patterns:
             tar_cmd += ["--exclude", p]
         tar_cmd += ["-C", local_abs, "."]
-        writer, reader = _popen_pipe(tar_cmd, ["ssh", host, remote_cmd])
+        writer, reader = _popen_pipe(tar_cmd, _ssh(host) + [remote_cmd])
         return _wait_pipe(writer, reader)
 
     # Write file list to a temp file to avoid Windows command-line length limits
@@ -123,7 +141,7 @@ def tar_push(
         tmp.close()
         tar_cmd = ["tar", "-czf", "-", "--format=pax", "-C", local_abs,
                    f"--files-from={tmp.name}"]
-        writer, reader = _popen_pipe(tar_cmd, ["ssh", host, remote_cmd])
+        writer, reader = _popen_pipe(tar_cmd, _ssh(host) + [remote_cmd])
         return _wait_pipe(writer, reader)
     finally:
         os.unlink(tmp.name)
@@ -153,7 +171,7 @@ def tar_pull(
     Path(local_dest).mkdir(parents=True, exist_ok=True)
 
     writer, reader = _popen_pipe(
-        ["ssh", host, remote_cmd],
+        _ssh(host) + [remote_cmd],
         ["tar", "-xzf", "-", "-C", local_abs],
     )
     return _wait_pipe(writer, reader)
