@@ -77,28 +77,42 @@ def _load_config() -> Config:
         sys.exit(1)
 
 
-def _require_job(session: Session, cfg: Config) -> str:
-    if session.job_id:
-        return session.job_id
-
-    # No cached job — check squeue for a running job to recover from an
-    # interrupted `hpc up` that submitted successfully but never saved the ID.
+def _sync_job(session: Session, cfg: Config) -> None:
+    """Verify the cached job is still running; recover or clear if not."""
     _, out = ssh_capture(cfg.host, f"squeue -h -u {cfg.user} -t R -o '%i %N'")
-    lines = [l.split() for l in out.strip().splitlines() if l.strip()]
-    if not lines:
+    running = {}
+    for line in out.strip().splitlines():
+        parts = line.split()
+        if parts:
+            running[parts[0]] = parts[1] if len(parts) > 1 else "unknown"
+
+    if session.job_id:
+        if session.job_id in running:
+            # Update node in case it changed
+            session.node = running[session.job_id]
+            session.save()
+        else:
+            console.print(f"[yellow]Job {session.job_id} is no longer running — clearing stale session.[/yellow]")
+            session.clear_job()
+
+    if not session.job_id and running:
+        # Recover from an interrupted `hpc up`
+        job_id, node = next(iter(running.items()))
+        if len(running) > 1:
+            console.print(f"[yellow]Multiple running jobs found; using job {job_id} ({node}).[/yellow]")
+        else:
+            console.print(f"[yellow]Recovered job {job_id} running on {node}.[/yellow]")
+        session.job_id = job_id
+        session.node = node
+        session.save()
+
+
+def _require_job(session: Session, cfg: Config) -> str:
+    _sync_job(session, cfg)
+    if not session.job_id:
         console.print("[red]No active job. Run `hpc up` first.[/red]")
         sys.exit(1)
-
-    job_id, node = lines[0][0], lines[0][1] if len(lines[0]) > 1 else "unknown"
-    if len(lines) > 1:
-        console.print(f"[yellow]Multiple running jobs found; using job {job_id} ({node}).[/yellow]")
-    else:
-        console.print(f"[yellow]Recovered job {job_id} running on {node}. Use `hpc down` to cancel when done.[/yellow]")
-
-    session.job_id = job_id
-    session.node = node
-    session.save()
-    return job_id
+    return session.job_id
 
 
 def _require_project(session: Session) -> str:
@@ -173,9 +187,10 @@ def up(cpus: Optional[int], gpus: Optional[int], walltime: Optional[int], name: 
     """Allocate a GPU node (submit holder job and wait until running)."""
     cfg = _load_config()
     session = Session.load()
+    _sync_job(session, cfg)
 
     if session.job_id:
-        console.print(f"[yellow]Job {session.job_id} is already active. Run `hpc down` first.[/yellow]")
+        console.print(f"[yellow]Job {session.job_id} is already active on {session.node}. Run `hpc down` first.[/yellow]")
         sys.exit(1)
 
     script = _ENTRY_SH.format(
