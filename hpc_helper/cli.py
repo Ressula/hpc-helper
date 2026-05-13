@@ -501,16 +501,54 @@ def run(
 # ── hpc shell ─────────────────────────────────────────────────────────────────
 
 @cli.command()
-def shell() -> None:
+@click.option("--tmux", "use_tmux", is_flag=True,
+              help="Wrap in a tmux session — stays alive if your terminal closes.")
+def shell(use_tmux: bool) -> None:
     """Open an interactive bash session on the active GPU node.
 
-    Requires an active job (hpc up). Type `exit` to leave without cancelling the job.
+    Automatically activates the default conda environment and navigates to
+    the remote project directory. Type `exit` to leave without cancelling the job.
+
+    Use --tmux to keep the session alive after disconnecting. Re-run
+    `hpc shell --tmux` to reattach to the same session.
     """
     cfg = _load_config()
     session = Session.load()
     job_id = _require_job(session, cfg)
-    console.print(f"Attaching to job [bold]{job_id}[/bold] on [bold]{session.node}[/bold]...\n")
-    ssh_run(cfg.host, f"srun --jobid={job_id} --overlap --pty bash")
+    remote_project = session.remote_project or cfg.remote_home
+    conda_init = f"{cfg.remote_home}/miniconda3/etc/profile.d/conda.sh"
+
+    console.print(f"Attaching to job [bold]{job_id}[/bold] on [bold]{session.node}[/bold]...")
+    console.print(f"[dim]env: {cfg.conda_env}   cwd: {remote_project}[/dim]\n")
+
+    # Write a small init script to the remote, then start bash --rcfile
+    # pointing at it. This avoids the "exec bash loses state" problem and
+    # works identically for plain and tmux sessions.
+    init_path = f"{cfg.remote_home}/.hpc-shell-init.sh"
+    init_script = (
+        f"source ~/.bashrc 2>/dev/null\n"
+        f"source {conda_init} 2>/dev/null\n"
+        f"conda activate {cfg.conda_env} 2>/dev/null\n"
+        f"cd {shlex.quote(remote_project)}\n"
+    )
+
+    if use_tmux:
+        tmux_name = shlex.quote(f"hpc-{job_id}")
+        srun_cmd = (
+            f"printf '%s\\n' {shlex.quote(init_script)} > {init_path} && "
+            f"srun --jobid={job_id} --overlap --pty "
+            f"tmux new-session -A -s {tmux_name} "
+            f"'bash --rcfile {init_path}'"
+        )
+        console.print(f"[dim]tmux session {tmux_name} — persists after disconnect[/dim]\n")
+    else:
+        srun_cmd = (
+            f"printf '%s\\n' {shlex.quote(init_script)} > {init_path} && "
+            f"srun --jobid={job_id} --overlap --pty "
+            f"bash --rcfile {init_path}"
+        )
+
+    ssh_run(cfg.host, srun_cmd)
 
 
 # ── hpc logs ──────────────────────────────────────────────────────────────────
