@@ -515,11 +515,10 @@ def shell(use_tmux: bool) -> None:
     cfg = _load_config()
     session = Session.load()
     job_id = _require_job(session, cfg)
-    remote_project = session.remote_project or cfg.remote_home
     conda_init = f"{cfg.remote_home}/miniconda3/etc/profile.d/conda.sh"
 
     console.print(f"Attaching to job [bold]{job_id}[/bold] on [bold]{session.node}[/bold]...")
-    console.print(f"[dim]env: {cfg.conda_env}   cwd: {remote_project}[/dim]\n")
+    console.print(f"[dim]env: {cfg.conda_env}[/dim]\n")
 
     # Write a small init script to the remote, then start bash --rcfile
     # pointing at it. This avoids the "exec bash loses state" problem and
@@ -529,7 +528,6 @@ def shell(use_tmux: bool) -> None:
         f"source ~/.bashrc 2>/dev/null\n"
         f"source {conda_init} 2>/dev/null\n"
         f"conda activate {cfg.conda_env} 2>/dev/null\n"
-        f"cd {shlex.quote(remote_project)}\n"
     )
 
     if use_tmux:
