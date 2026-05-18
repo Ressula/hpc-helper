@@ -320,16 +320,17 @@ def ps() -> None:
     help="Force a full sync, ignoring the local change manifest.",
 )
 def push(local: str, remote_subpath: Optional[str], full: bool) -> None:
-    """Sync a local directory to the cluster.
+    """Sync a local directory or single file to the cluster.
 
     Only files that changed since the last push are transferred (incremental).
     Use --full to force a complete re-sync.
 
     \b
     Examples:
-      hpc push                            # ~/homework/project1 → remote:projects/project1/
+      hpc push                            # sync current directory
+      hpc push train.py                   # push a single file (relative to cwd)
       hpc push ./src                      # sync only the src/ subdirectory
-      hpc push --to experiments/run_42   # ~/homework/project1 → remote:experiments/run_42/
+      hpc push --to experiments/run_42   # sync to a custom remote path
       hpc push --full                     # re-send everything regardless of changes
     """
     cfg = _load_config()
@@ -340,6 +341,31 @@ def push(local: str, remote_subpath: Optional[str], full: bool) -> None:
         console.print(f"[red]Local path does not exist: {local_path}[/red]")
         console.print("[dim]Tip: --to sets the REMOTE destination, not a local path.[/dim]")
         sys.exit(1)
+
+    # ── single-file fast path ─────────────────────────────────────────────────
+    if local_path.is_file():
+        cwd = Path.cwd()
+        try:
+            rel = local_path.relative_to(cwd).as_posix()
+        except ValueError:
+            rel = local_path.name  # file is outside cwd, just use its name
+
+        if remote_subpath:
+            stripped = remote_subpath.lstrip("/").lstrip("~/")
+            remote_project = f"{cfg.remote_home}/{stripped}"
+        else:
+            remote_project = f"{cfg.remote_home}/projects/{cwd.name}"
+
+        ssh_capture(cfg.host, f"mkdir -p {remote_project}")
+        console.print(f"Pushing [bold]{rel}[/bold] → [bold]{cfg.host}:{remote_project}/[/bold]")
+        rc = tar_push(str(cwd), cfg.host, remote_project, files=[rel])
+        if rc != 0:
+            console.print("[red]Push failed.[/red]")
+            sys.exit(1)
+        session.remote_project = remote_project
+        session.save()
+        console.print("[green]Done.[/green]")
+        return
 
     if remote_subpath:
         stripped = remote_subpath.lstrip("/")
